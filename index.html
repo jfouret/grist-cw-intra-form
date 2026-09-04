@@ -21,7 +21,12 @@
       <div class="modal-content">
         <div class="modal-header">
           <h2>Configuration du formulaire</h2>
-          <button class="preview-btn" @click="showConfigModal = false">Previsualiser</button>
+          <span v-if="actionFeedback" class="header-feedback">{{ actionFeedback }}</span>
+          <div class="header-actions">
+            <button class="preview-btn" @click="showConfigModal = false">Previsualiser</button>
+            <button class="preview-btn" @click="exportConfiguration">Exporter</button>
+            <button class="preview-btn" @click="openImportPopup()">Importer</button>
+          </div>
         </div>
 
         <!-- Parametres globaux -->
@@ -322,8 +327,37 @@
         </div>
       </div>
     </div>
+
+    <!-- Popup d'import / export de configuration (JSON) -->
+    <div v-if="importPopup.show" class="validation-popup import-popup">
+      <h3 v-if="importPopup.readonly">Copier la configuration</h3>
+      <h3 v-else>Importer une configuration</h3>
+      <label v-if="importPopup.readonly">Copiez le texte ci-dessous (Ctrl+C) :</label>
+      <label v-else>Collez la configuration JSON :</label>
+      <textarea
+        ref="importTextarea"
+        v-model="importPopup.text"
+        class="import-textarea"
+        rows="12"
+        spellcheck="false"
+        :readonly="importPopup.readonly"
+      ></textarea>
+      <div v-if="importPopup.error" class="import-error">{{ importPopup.error }}</div>
+      <label v-if="importPopup.missingColumns.length && !importPopup.readonly" class="import-recreate">
+        <input type="checkbox" v-model="importPopup.recreate">
+        Recréer les colonnes manquantes dans la table
+      </label>
+      <div class="import-popup-buttons">
+        <button v-if="importPopup.readonly" class="save" @click="closeImportPopup">Fermer</button>
+        <template v-else>
+          <button class="cancel" @click="closeImportPopup">Annuler</button>
+          <button class="save" @click="confirmImport">Valider</button>
+        </template>
+      </div>
+    </div>
   </div>
 
+  <script src="config-io.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

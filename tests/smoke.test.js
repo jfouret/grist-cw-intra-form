@@ -36,6 +36,27 @@ describe('app.js — structural sanity', () => {
   });
 });
 
+describe('config-io.js — structural sanity', () => {
+  const src = read('config-io.js');
+
+  it('parses as valid JavaScript', () => {
+    expect(() => new Function(src)).not.toThrow();
+  });
+
+  it('exposes the IntraFormConfigIO API on window', () => {
+    expect(src).toContain('window.IntraFormConfigIO');
+    for (const fn of ['buildConfigPayload', 'normalizeImportedConfig', 'cleanupElement',
+      'diffMissingColumns', 'planColumnRecreation']) {
+      expect(src).toContain(fn);
+    }
+  });
+
+  it('declares the widget id and a config version', () => {
+    expect(src).toContain("'grist-cw-intra-form'");
+    expect(src).toMatch(/CONFIG_IO_VERSION\s*=\s*\d/);
+  });
+});
+
 describe('index.html — structural sanity', () => {
   const src = read('index.html');
 
@@ -48,7 +69,19 @@ describe('index.html — structural sanity', () => {
     expect(src).toContain('grist-plugin-api.js');
   });
 
+  it('loads config-io.js before app.js', () => {
+    expect(src).toMatch(/config-io\.js[\s\S]*app\.js/);
+  });
+
   it('declares the form container the Vue app mounts on', () => {
     expect(src).toMatch(/<div\s+id="app"/);
+  });
+
+  it('declares export/import buttons and the import popup', () => {
+    expect(src).toMatch(/@click="exportConfiguration"/);
+    expect(src).toMatch(/@click="openImportPopup\(\)"/);
+    expect(src).toMatch(/importPopup\.show/);
+    expect(src).toMatch(/@click="confirmImport"/);
+    expect(src).toMatch(/v-model="importPopup\.recreate"/);
   });
 });

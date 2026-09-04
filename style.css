@@ -86,6 +86,18 @@ body {
   background: #1a6bb8;
 }
 
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.header-feedback {
+  font-size: 13px;
+  color: #1a6bb8;
+  font-weight: 500;
+}
+
 /* -----------------------------------------------------------------------------
    Parametres globaux
    ----------------------------------------------------------------------------- */
@@ -563,6 +575,66 @@ select[multiple] option:checked {
 
 .validation-popup-buttons {
   justify-content: space-between;
+}
+
+/* -----------------------------------------------------------------------------
+   Import / export de configuration (JSON)
+   ----------------------------------------------------------------------------- */
+
+.import-popup {
+  min-width: 480px;
+  max-width: 640px;
+}
+
+.import-popup .import-textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+  line-height: 1.4;
+  margin-bottom: 8px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.import-popup .import-error {
+  font-size: 13px;
+  color: #c0392b;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+.import-popup .import-recreate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #37352f;
+  margin-bottom: 12px;
+  cursor: pointer;
+}
+
+.import-popup .import-recreate input {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.import-popup-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.import-popup-buttons button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
 }
 
 /* -----------------------------------------------------------------------------

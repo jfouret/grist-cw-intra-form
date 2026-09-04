@@ -4,7 +4,7 @@
 // conditional fields, rich text editing, and field validation.
 // =============================================================================
 
-const { createApp, ref, computed, reactive, onMounted, toRaw } = Vue;
+const { createApp, ref, computed, reactive, onMounted, nextTick, toRaw } = Vue;
 
 // DOMPurify configuration for XSS protection (shared across all sanitization calls)
 const sanitizeConfig = {
@@ -34,6 +34,7 @@ const app = createApp({
     // -------------------------------------------------------------------------
     const columns = ref([]);              // List of column IDs from current table
     const columnMetadata = ref({});       // Metadata for each column (type, choices, etc.)
+    const docTableIds = ref([]);          // List of all table IDs in the document
     const formElements = ref([]);         // Form configuration (fields, separators, text)
     const formData = reactive({});        // Current form values
     const errors = reactive({});          // Validation errors per field
@@ -173,6 +174,22 @@ const app = createApp({
       hasExisting: false
     });
 
+    // "Import popup" (paste a JSON configuration) state.
+    // readonly: true when reused as the manual-copy fallback for export.
+    const importPopup = reactive({
+      show: false,
+      text: '',
+      error: '',
+      readonly: false,
+      recreate: true,        // Recreate missing columns in the attached table
+      missingColumns: []     // Missing column names detected on last validation
+    });
+    const importTextarea = ref(null);     // Textarea element (focus/select)
+
+    // Transient feedback message in the config modal header
+    const actionFeedback = ref('');
+    let actionFeedbackTimer = null;
+
     // Rich editor state
     const richEditor = ref(null);
     const colorPicker = reactive({ show: false, type: '' });
@@ -287,6 +304,9 @@ const app = createApp({
         //     tableId: ['Clients', 'Commandes', 'Produits']
         //   }
         const tablesInfo = await grist.docApi.fetchTable('_grist_Tables');
+
+        // Remember all table IDs (used to check Ref targets before column recreation)
+        docTableIds.value = tablesInfo.tableId.slice();
 
         const metadata = {};
 
@@ -429,33 +449,7 @@ const app = createApp({
           }
 
           // Clean up invalid properties based on current column type
-          if (el.type === 'field') {
-            const meta = columnMetadata.value[el.fieldName];
-
-            // multiline: only valid for pure text fields
-            if (el.multiline && meta && !isPureTextFieldByMeta(meta)) {
-              delete el.multiline;
-            }
-
-            // maxLength: only valid for text/numeric/int fields
-            if (el.maxLength != null && meta && !isTextOrNumericFieldByMeta(meta)) {
-              delete el.maxLength;
-            }
-
-            // conditional: verify that the referenced field is still a valid condition field
-            if (el.conditional) {
-              const condMeta = columnMetadata.value[el.conditional.field];
-              const isValidConditionField = condMeta && (
-                (condMeta.choices?.length > 0 && !condMeta.isMultiple) ||
-                (condMeta.isRef && !condMeta.isMultiple && condMeta.refChoices?.length > 0)
-              );
-              if (!isValidConditionField) {
-                delete el.conditional;
-              }
-            }
-          }
-
-          return el;
+          return IntraFormConfigIO.cleanupElement(el, columnMetadata.value);
         });
       }
 
@@ -463,7 +457,11 @@ const app = createApp({
       globalFont.value = options.globalFont || '';
       globalPadding.value = options.globalPadding || '';
 
-      // Initialize formData with default values for each field
+      initFormDataDefaults();
+    }
+
+    // Initialize formData with default values for each field
+    function initFormDataDefaults() {
       formElements.value.forEach(el => {
         if (el.type === 'field') {
           const meta = columnMetadata.value[el.fieldName];
@@ -493,6 +491,151 @@ const app = createApp({
         globalFont: globalFont.value,
         globalPadding: globalPadding.value
       });
+    }
+
+    // -------------------------------------------------------------------------
+    // CONFIGURATION IMPORT / EXPORT
+    // -------------------------------------------------------------------------
+
+    // Show a transient message in the config modal header
+    function showActionFeedback(message) {
+      actionFeedback.value = message;
+      clearTimeout(actionFeedbackTimer);
+      actionFeedbackTimer = setTimeout(() => { actionFeedback.value = ''; }, 2500);
+    }
+
+    // Export current configuration as JSON:
+    // copy to clipboard, fall back to a readonly popup for manual copy
+    async function exportConfiguration() {
+      const payload = IntraFormConfigIO.buildConfigPayload({
+        formElements: toRaw(formElements.value),
+        globalFont: globalFont.value,
+        globalPadding: globalPadding.value
+      }, columnMetadata.value);
+
+      const json = JSON.stringify(payload, null, 2);
+
+      try {
+        await navigator.clipboard.writeText(json);
+        showActionFeedback('Configuration copi\u00e9e dans le presse-papiers');
+      } catch (e) {
+        // Clipboard API unavailable or denied (iframe): show JSON for manual copy
+        openImportPopup({ readonly: true, text: json });
+      }
+    }
+
+    // Open the import popup. Options: { readonly, text }
+    function openImportPopup(options = {}) {
+      importPopup.text = options.text || '';
+      importPopup.error = '';
+      importPopup.missingColumns = [];
+      importPopup.recreate = true;
+      importPopup.readonly = !!options.readonly;
+      importPopup.show = true;
+      showOverlay.value = true;
+      nextTick(() => {
+        if (importPopup.readonly) {
+          importTextarea.value?.select();
+        } else {
+          importTextarea.value?.focus();
+        }
+      });
+    }
+
+    // Close the import popup
+    function closeImportPopup() {
+      importPopup.show = false;
+      importPopup.readonly = false;
+      importPopup.error = '';
+      showOverlay.value = false;
+    }
+
+    // Validate the pasted JSON and (after confirmation) replace the whole
+    // configuration. If columns are missing, offer to recreate them in the
+    // attached table via AddColumn user actions.
+    async function confirmImport() {
+      importPopup.error = '';
+      importPopup.missingColumns = [];
+
+      if (!importPopup.text.trim()) {
+        importPopup.error = 'Veuillez coller une configuration JSON.';
+        return;
+      }
+
+      let payload;
+      try {
+        payload = JSON.parse(importPopup.text);
+      } catch (e) {
+        importPopup.error = 'JSON invalide : ' + e.message;
+        return;
+      }
+
+      const result = IntraFormConfigIO.normalizeImportedConfig(payload, {
+        columnMetadata: columnMetadata.value,
+        sanitize: (html) => DOMPurify.sanitize(html, sanitizeConfig)
+      });
+      if (!result.ok) {
+        importPopup.error = result.error;
+        return;
+      }
+
+      // Missing columns: report them, then optionally recreate before applying
+      let recreationActions = null;
+      if (result.missingColumns.length > 0) {
+        importPopup.missingColumns = result.missingColumns;
+
+        if (!importPopup.recreate) {
+          importPopup.error = 'Colonnes introuvables dans la table : ' + result.missingColumns.join(', ');
+          return;
+        }
+
+        const tableId = await grist.getTable().getTableId();
+        const plan = IntraFormConfigIO.planColumnRecreation(
+          result.missingColumns, result.config.formElements, docTableIds.value, tableId
+        );
+        if (!plan.ok) {
+          importPopup.error = 'Impossible de recr\u00e9er les colonnes : ' + plan.unrecreatable.join(', ');
+          return;
+        }
+        recreationActions = plan.actions;
+      }
+
+      // Ask before replacing an existing configuration (and before any schema change)
+      if (formElements.value.length > 0 && !window.confirm('Remplacer la configuration actuelle ?')) {
+        return;
+      }
+
+      if (recreationActions) {
+        try {
+          await grist.docApi.applyUserActions(recreationActions);
+        } catch (e) {
+          importPopup.error = '\u00c9chec de la recr\u00e9ation des colonnes : ' + (e?.message || e);
+          return;
+        }
+
+        // Refresh metadata and re-validate the imported elements against it
+        columnMetadata.value = await getColumnMetadata();
+        columns.value = Object.keys(columnMetadata.value);
+        result.config.formElements.forEach(el => {
+          IntraFormConfigIO.cleanupElement(el, columnMetadata.value);
+        });
+
+        const stillMissing = IntraFormConfigIO.diffMissingColumns(result.config.formElements, columnMetadata.value);
+        if (stillMissing.length > 0) {
+          importPopup.error = 'Colonnes toujours introuvables apr\u00e8s recr\u00e9ation : ' + stillMissing.join(', ');
+          return;
+        }
+      }
+
+      // Full replacement of the configuration
+      formElements.value = result.config.formElements;
+      globalFont.value = result.config.globalFont;
+      globalPadding.value = result.config.globalPadding;
+      initFormDataDefaults();
+      await saveConfiguration();
+
+      closeImportPopup();
+      showActionFeedback('Configuration import\u00e9e');
     }
 
     // -------------------------------------------------------------------------
@@ -612,6 +755,8 @@ const app = createApp({
       editPopup.show = false;
       filterPopup.show = false;
       validationPopup.show = false;
+      importPopup.show = false;
+      importPopup.readonly = false;
     }
 
     // Show edit popup for field label
@@ -880,30 +1025,19 @@ const app = createApp({
     // FIELD TYPE HELPERS
     // -------------------------------------------------------------------------
 
-    // Check if metadata indicates a text or numeric field (can have maxLength validation)
-    function isTextOrNumericFieldByMeta(meta) {
-      if (!meta) return false;
-      return !meta.isBool && !meta.isDate && !meta.isDateTime && !meta.isMultiple && !meta.isAttachment &&
-        (!meta.choices || meta.choices.length === 0) &&
-        (!meta.isRef || meta.refChoices.length === 0);
-    }
-
-    // Check if metadata indicates a pure text field (can be multiline)
-    function isPureTextFieldByMeta(meta) {
-      if (!isTextOrNumericFieldByMeta(meta)) return false;
-      return !meta.isNumeric && !meta.isInt;
-    }
+    // Meta-based helpers (isTextOrNumericFieldByMeta / isPureTextFieldByMeta)
+    // live in config-io.js (shared with import/export logic).
 
     // Check if a field is text or numeric (can have maxLength validation)
     function isTextOrNumericField(element) {
       if (element.type !== 'field') return false;
-      return isTextOrNumericFieldByMeta(columnMetadata.value[element.fieldName]);
+      return IntraFormConfigIO.isTextOrNumericFieldByMeta(columnMetadata.value[element.fieldName]);
     }
 
     // Check if a field is pure text (can be multiline)
     function isPureTextField(element) {
       if (element.type !== 'field') return false;
-      return isPureTextFieldByMeta(columnMetadata.value[element.fieldName]);
+      return IntraFormConfigIO.isPureTextFieldByMeta(columnMetadata.value[element.fieldName]);
     }
 
     // -------------------------------------------------------------------------
@@ -1206,6 +1340,9 @@ const app = createApp({
       editPopup,
       filterPopup,
       validationPopup,
+      importPopup,
+      importTextarea,
+      actionFeedback,
       richEditor,
       colorPicker,
       emojiPicker,
@@ -1224,6 +1361,10 @@ const app = createApp({
       onFileSelect,
       removeAttachment,
       saveConfiguration,
+      exportConfiguration,
+      openImportPopup,
+      closeImportPopup,
+      confirmImport,
       addElement,
       removeElement,
       toggleRequired,
